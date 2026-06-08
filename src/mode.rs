@@ -63,6 +63,21 @@ fn detect_from(pci_path: &str) -> Detection {
                 nvswitch: Some("nvl4"),
             }
         }
+        // HGX A100 8-GPU baseboard exposes 6 NVSwitches (all 3rd-gen, NVL4).
+        // Each A100 has 12 NVLinks; the 6 switches form the local fabric for
+        // the 8 GPUs on the baseboard. nv-fabricmanager treats this as the
+        // same FABRIC_MODE=0 shape as the 4-NVSwitch DGX A100 variant, so
+        // map it to the same nvl4 mode.
+        (6, 8, 0) => {
+            debug!(
+                "mode: gpu FABRIC_MODE=0, {} GPU + {} NVSWITCH (HGX A100 8-GPU baseboard)",
+                gpus, nvswitches
+            );
+            Detection {
+                mode: "gpu",
+                nvswitch: Some("nvl4"),
+            }
+        }
         (4, 0, 0) => {
             debug!("mode: servicevm-nvl4 FABRIC_MODE=1");
             Detection {
@@ -329,6 +344,21 @@ mod tests {
     fn test_detect_gpu_bare_metal_nvl4() {
         let pci = TempDir::new().unwrap();
         for i in 0..4 {
+            create_pci_device(&pci, &format!("0000:0{}:00.0", i), "0x10de\n", "0x068000\n");
+        }
+        for i in 0..8 {
+            create_pci_device(&pci, &format!("0000:4{}:00.0", i), "0x10de\n", "0x030200\n");
+        }
+        let d = detect_from(pci.path().to_str().unwrap());
+        assert_eq!(d.mode, "gpu");
+        assert_eq!(d.nvswitch, Some("nvl4"));
+    }
+
+    // HGX A100 8-GPU baseboard exposes 6 NVSwitches + 8 GPUs.
+    #[test]
+    fn test_detect_gpu_bare_metal_nvl4_hgx_a100() {
+        let pci = TempDir::new().unwrap();
+        for i in 0..6 {
             create_pci_device(&pci, &format!("0000:0{}:00.0", i), "0x10de\n", "0x068000\n");
         }
         for i in 0..8 {
