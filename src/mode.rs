@@ -33,7 +33,10 @@ fn detect_from(pci_path: &str) -> Detection {
     let gpus = count_gpus_from(pci_path);
     let sw_mng = count_sw_mng_from(pci_path);
 
-    debug!(
+    // info!, not debug!: this is the single most important data point for
+    // explaining "why did NVRC pick this mode" in any postmortem, and the
+    // line is cheap.
+    log::info!(
         "topology: {} GPU, {} NVSWITCH, {} PCI_SW_MNG",
         gpus, nvswitches, sw_mng
     );

@@ -11,6 +11,11 @@ pub fn load(module: &str) {
     if module == "nvidia" && count_nvidia_gpus_from("/sys/bus/pci/devices") == 1 {
         args.push("NVreg_NvLinkDisable=1");
     }
+    // Log the exact argv before execution. The conditional
+    // NVreg_NvLinkDisable=1 is otherwise invisible to anyone reading the
+    // log, and module load is a load-bearing step we have repeatedly had
+    // to reason about after the fact.
+    log::info!("modprobe: loading with args={:?}", args);
     foreground(MODPROBE, &args);
 }
 
