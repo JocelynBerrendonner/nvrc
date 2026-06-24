@@ -132,10 +132,10 @@ impl NVRC {
     /// FABRIC_MODE: 0 = bare metal (GPUs local), 1 = service VM (GPUs in tenant VMs)
     /// PARTITION_RAIL_POLICY: "greedy" (NVL4) or "symmetric" (NVL5, required for CC on Blackwell)
     ///
-    /// Also force three settings that make fabricmanager observable and reapable
+    /// Also force four settings that make fabricmanager observable and reapable
     /// from inside NVRC's UVM (regardless of what the shipped default cfg says):
     ///
-    /// * `LOG_FILE_NAME=` (empty) — fabricmanager logs to stderr instead of
+    /// * `LOG_FILE_NAME=/dev/stderr` — fabricmanager logs to stderr instead of
     ///   `/var/log/fabricmanager.log`. `background()` wires stderr to /dev/kmsg,
     ///   which the kernel forwards to the hvc0 console, which the host captures
     ///   as the `openvmm-guest:` journal stream. The default file destination
@@ -143,6 +143,16 @@ impl NVRC {
     ///   the UVM dies, so debugging fabricmanager hangs (e.g. ENOENT on
     ///   `/usr/bin/nvidia-modprobe`, missing topology files, NvLink training
     ///   failures) is impossible without this.
+    ///
+    ///   IMPORTANT: must be `/dev/stderr` (a real fd, == /proc/self/fd/2), NOT
+    ///   empty. Verified 2026-06-23 on Standard_ND96amsr_A100_v4: fabricmanager
+    ///   treats `LOG_FILE_NAME=` (empty) as "fall back to compile-time default
+    ///   = /var/log/fabricmanager.log", which silently traps every log line on
+    ///   the UVM tmpfs. With `=/dev/stderr` the output flows to the console.
+    /// * `LOG_LEVEL=5` — DEBUG. Default is 4 = INFO which only emits the
+    ///   `FM starting NvLink Inband` marker and fatal errors. DEBUG gives us
+    ///   the per-fabric-init-step output that's actually useful when
+    ///   diagnosing "fabricmanager spawned and went silent" hangs.
     /// * `LOG_USE_SYSLOG=0` — the chiseled UVM has no syslog daemon. With
     ///   `=1` (the shipped default) fabricmanager prefers syslog and silently
     ///   drops lines whose syslog write fails, leaving us with even fewer
@@ -160,7 +170,8 @@ impl NVRC {
         let updates = &[
             ("FABRIC_MODE", fm.as_str()),
             ("PARTITION_RAIL_POLICY", rail_policy),
-            ("LOG_FILE_NAME", ""),
+            ("LOG_FILE_NAME", "/dev/stderr"),
+            ("LOG_LEVEL", "5"),
             ("LOG_USE_SYSLOG", "0"),
             ("DAEMONIZE", "0"),
         ];
@@ -476,14 +487,17 @@ mod tests {
         assert!(content.contains("PARTITION_RAIL_POLICY=symmetric"));
     }
 
-    /// configure_fabricmanager() must unconditionally emit three diagnostic /
+    /// configure_fabricmanager() must unconditionally emit four diagnostic /
     /// correctness overrides on top of whatever the shipped fabricmanager.cfg
     /// default says, regardless of fabric_mode or rail_policy:
-    ///   * LOG_FILE_NAME=         (route logs to stderr -> /dev/kmsg -> console)
-    ///   * LOG_USE_SYSLOG=0       (no syslogd in the chiseled UVM)
-    ///   * DAEMONIZE=0            (keep PID stable for NVRC's track_daemon)
+    ///   * LOG_FILE_NAME=/dev/stderr  (logs to stderr -> /dev/kmsg -> console)
+    ///   * LOG_LEVEL=5                (DEBUG -- captures per-init-step output)
+    ///   * LOG_USE_SYSLOG=0           (no syslogd in the chiseled UVM)
+    ///   * DAEMONIZE=0                (keep PID stable for NVRC's track_daemon)
     /// Without these, fabricmanager hangs/errors are invisible from the host
     /// journal and NVRC tracks a transient PID instead of the real worker.
+    /// `/dev/stderr` is required because empty `LOG_FILE_NAME=` is interpreted
+    /// by fabricmanager as "fall back to /var/log/fabricmanager.log".
     #[test]
     fn test_configure_fabricmanager_emits_diagnostic_overrides() {
         use tempfile::NamedTempFile;
@@ -495,6 +509,7 @@ mod tests {
         fs::write(
             path,
             "LOG_FILE_NAME=/var/log/fabricmanager.log\n\
+             LOG_LEVEL=4\n\
              LOG_USE_SYSLOG=1\n\
              DAEMONIZE=1\n",
         )
@@ -504,13 +519,10 @@ mod tests {
         nvrc.configure_fabricmanager(path, FABRIC_MODE_FULL, "greedy");
 
         let content = fs::read_to_string(path).unwrap();
-        let has_line = |k: &str| {
-            content
-                .lines()
-                .any(|l| l.trim() == k)
-        };
+        let has_line = |k: &str| content.lines().any(|l| l.trim() == k);
         // Exact-line matches catch the stale defaults being left behind.
-        assert!(has_line("LOG_FILE_NAME="), "got:\n{}", content);
+        assert!(has_line("LOG_FILE_NAME=/dev/stderr"), "got:\n{}", content);
+        assert!(has_line("LOG_LEVEL=5"), "got:\n{}", content);
         assert!(has_line("LOG_USE_SYSLOG=0"), "got:\n{}", content);
         assert!(has_line("DAEMONIZE=0"), "got:\n{}", content);
         // And ensure the original defaults are GONE (not just shadowed).
@@ -519,6 +531,7 @@ mod tests {
             "stale LOG_FILE_NAME survived:\n{}",
             content
         );
+        assert!(!has_line("LOG_LEVEL=4"), "stale LOG_LEVEL survived:\n{}", content);
         assert!(!has_line("LOG_USE_SYSLOG=1"), "stale LOG_USE_SYSLOG survived:\n{}", content);
         assert!(!has_line("DAEMONIZE=1"), "stale DAEMONIZE survived:\n{}", content);
     }
