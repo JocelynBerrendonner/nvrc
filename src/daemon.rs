@@ -131,11 +131,38 @@ impl NVRC {
     /// Write FABRIC_MODE and PARTITION_RAIL_POLICY to fabricmanager.cfg.
     /// FABRIC_MODE: 0 = bare metal (GPUs local), 1 = service VM (GPUs in tenant VMs)
     /// PARTITION_RAIL_POLICY: "greedy" (NVL4) or "symmetric" (NVL5, required for CC on Blackwell)
+    ///
+    /// Also force three settings that make fabricmanager observable and reapable
+    /// from inside NVRC's UVM (regardless of what the shipped default cfg says):
+    ///
+    /// * `LOG_FILE_NAME=` (empty) — fabricmanager logs to stderr instead of
+    ///   `/var/log/fabricmanager.log`. `background()` wires stderr to /dev/kmsg,
+    ///   which the kernel forwards to the hvc0 console, which the host captures
+    ///   as the `openvmm-guest:` journal stream. The default file destination
+    ///   lives on the UVM's tmpfs and is unrecoverable once NVRC panics and
+    ///   the UVM dies, so debugging fabricmanager hangs (e.g. ENOENT on
+    ///   `/usr/bin/nvidia-modprobe`, missing topology files, NvLink training
+    ///   failures) is impossible without this.
+    /// * `LOG_USE_SYSLOG=0` — the chiseled UVM has no syslog daemon. With
+    ///   `=1` (the shipped default) fabricmanager prefers syslog and silently
+    ///   drops lines whose syslog write fails, leaving us with even fewer
+    ///   diagnostic breadcrumbs than the file destination above.
+    /// * `DAEMONIZE=0` — correctness fix: with `=1` (the shipped default)
+    ///   fabricmanager forks and the parent exits immediately, so NVRC's
+    ///   `track_daemon("nv-fabricmanager", child)` ends up tracking a PID
+    ///   that's already gone, the real fabricmanager becomes a re-parented
+    ///   orphan that NVRC can't reap, and the stderr fd that `background()`
+    ///   wired up disconnects on the parent exit. `=0` keeps fabricmanager
+    ///   in the foreground so NVRC owns the right PID and stderr stays
+    ///   attached for the whole process lifetime.
     fn configure_fabricmanager(&self, cfg_path: &str, fabric_mode: u8, rail_policy: &str) {
         let fm = &fabric_mode.to_string();
         let updates = &[
             ("FABRIC_MODE", fm.as_str()),
             ("PARTITION_RAIL_POLICY", rail_policy),
+            ("LOG_FILE_NAME", ""),
+            ("LOG_USE_SYSLOG", "0"),
+            ("DAEMONIZE", "0"),
         ];
         update_config_file(cfg_path, updates);
     }
@@ -447,5 +474,52 @@ mod tests {
         let content = fs::read_to_string(path).unwrap();
         assert!(content.contains("FABRIC_MODE=1"));
         assert!(content.contains("PARTITION_RAIL_POLICY=symmetric"));
+    }
+
+    /// configure_fabricmanager() must unconditionally emit three diagnostic /
+    /// correctness overrides on top of whatever the shipped fabricmanager.cfg
+    /// default says, regardless of fabric_mode or rail_policy:
+    ///   * LOG_FILE_NAME=         (route logs to stderr -> /dev/kmsg -> console)
+    ///   * LOG_USE_SYSLOG=0       (no syslogd in the chiseled UVM)
+    ///   * DAEMONIZE=0            (keep PID stable for NVRC's track_daemon)
+    /// Without these, fabricmanager hangs/errors are invisible from the host
+    /// journal and NVRC tracks a transient PID instead of the real worker.
+    #[test]
+    fn test_configure_fabricmanager_emits_diagnostic_overrides() {
+        use tempfile::NamedTempFile;
+
+        let tmpfile = NamedTempFile::new().unwrap();
+        let path = tmpfile.path().to_str().unwrap();
+        // Start from a cfg that has the shipped defaults so we exercise the
+        // "update existing key in place" code path, not the "append" path.
+        fs::write(
+            path,
+            "LOG_FILE_NAME=/var/log/fabricmanager.log\n\
+             LOG_USE_SYSLOG=1\n\
+             DAEMONIZE=1\n",
+        )
+        .unwrap();
+
+        let nvrc = NVRC::default();
+        nvrc.configure_fabricmanager(path, FABRIC_MODE_FULL, "greedy");
+
+        let content = fs::read_to_string(path).unwrap();
+        let has_line = |k: &str| {
+            content
+                .lines()
+                .any(|l| l.trim() == k)
+        };
+        // Exact-line matches catch the stale defaults being left behind.
+        assert!(has_line("LOG_FILE_NAME="), "got:\n{}", content);
+        assert!(has_line("LOG_USE_SYSLOG=0"), "got:\n{}", content);
+        assert!(has_line("DAEMONIZE=0"), "got:\n{}", content);
+        // And ensure the original defaults are GONE (not just shadowed).
+        assert!(
+            !content.contains("LOG_FILE_NAME=/var/log/fabricmanager.log"),
+            "stale LOG_FILE_NAME survived:\n{}",
+            content
+        );
+        assert!(!has_line("LOG_USE_SYSLOG=1"), "stale LOG_USE_SYSLOG survived:\n{}", content);
+        assert!(!has_line("DAEMONIZE=1"), "stale DAEMONIZE survived:\n{}", content);
     }
 }
