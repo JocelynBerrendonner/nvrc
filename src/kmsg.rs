@@ -134,7 +134,11 @@ pub fn wait_for_marker(reader: &mut BufReader<File>, marker: &str, timeout_secs:
 /// stable equivalent of the old fabricmanager marker.
 pub fn wait_for_kmsg_count(marker: &str, count: usize, timeout_secs: u32) {
     if count == 0 {
-        info!("wait_for_kmsg_count: count=0, returning immediately ({marker})");
+        // Log the count/timeout (caller-supplied integers), NOT the marker
+        // text -- see the long comment in the loop below for why mentioning
+        // `marker` in any info!() that the kernlog crate writes to /dev/kmsg
+        // creates a self-feedback loop.
+        info!("wait_for_kmsg_count: count=0, returning immediately");
         return;
     }
 
@@ -159,9 +163,20 @@ pub fn wait_for_kmsg_count(marker: &str, count: usize, timeout_secs: u32) {
     let mut line = String::new();
     let mut seen: usize = 0;
 
-    info!(
-        "wait_for_kmsg_count: waiting for {count} occurrence(s) of '{marker}' in /dev/kmsg (timeout {timeout_secs}s)"
-    );
+    // CAREFUL: do NOT include `{marker}` in any info!() inside this function.
+    // The NVRC build links the `kernlog` crate as its log backend, which
+    // routes every info!() through /dev/kmsg. Any line we emit then becomes
+    // the next line we read back from /dev/kmsg. If that line contains the
+    // marker substring (because we said "waiting for 'knvlink...'" or
+    // "matched 1/8: knvlink..."), we count our OWN log line as a match,
+    // log a new "matched 2/8" line that also contains the substring, count
+    // that, and so on -- the waiter completes in ~1 ms instead of waiting
+    // for the actual driver-emitted kernel printk. Verified 2026-06-26 on
+    // Standard_ND96amsr_A100_v4: 8 GPUs supposedly registered into the
+    // fabric in 1.24 ms, then nvidia-smi inside the container hung because
+    // the fabric was still training. Keep all status logging in this
+    // function marker-free.
+    info!("wait_for_kmsg_count: waiting for {count} occurrence(s) in /dev/kmsg (timeout {timeout_secs}s)");
 
     loop {
         if Instant::now() > deadline {
@@ -172,7 +187,7 @@ pub fn wait_for_kmsg_count(marker: &str, count: usize, timeout_secs: u32) {
             Ok(0) => std::thread::sleep(Duration::from_millis(200)),
             Ok(_) if line.contains(marker) => {
                 seen += 1;
-                info!("wait_for_kmsg_count: matched {seen}/{count}: {marker}");
+                info!("wait_for_kmsg_count: matched {seen}/{count}");
                 if seen >= count {
                     return;
                 }
