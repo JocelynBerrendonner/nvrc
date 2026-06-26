@@ -180,6 +180,15 @@ impl NVRC {
     /// FABRIC_MODE: 0 = bare metal (GPUs local), 1 = service VM (GPUs in tenant VMs)
     /// PARTITION_RAIL_POLICY: "greedy" (NVL4) or "symmetric" (NVL5, required for CC on Blackwell)
     ///
+    /// PARTITION_RAIL_POLICY is only emitted when `fabric_mode != FABRIC_MODE_FULL`:
+    /// fabricmanager in `FABRIC_MODE=0` rejects the key with
+    /// `unsupported config item PARTITION_RAIL_POLICY is specified in fabric
+    /// manager config file` (verified 2026-06-26 on Standard_ND96amsr_A100_v4,
+    /// FM 580.159.04). The warning is benign — FM proceeds normally — but it
+    /// pollutes the openvmm-guest journal and falsely implicates fabricmanager
+    /// during triage. The shared-NVSwitch path (`FABRIC_MODE=1`) is where the
+    /// rail-policy knob actually applies, so we keep emitting it there.
+    ///
     /// Also force four settings that make fabricmanager observable and reapable
     /// from inside NVRC's UVM (regardless of what the shipped default cfg says):
     ///
@@ -215,15 +224,20 @@ impl NVRC {
     ///   attached for the whole process lifetime.
     fn configure_fabricmanager(&self, cfg_path: &str, fabric_mode: u8, rail_policy: &str) {
         let fm = &fabric_mode.to_string();
-        let updates = &[
+        let mut updates: Vec<(&str, &str)> = vec![
             ("FABRIC_MODE", fm.as_str()),
-            ("PARTITION_RAIL_POLICY", rail_policy),
             ("LOG_FILE_NAME", "/dev/stderr"),
             ("LOG_LEVEL", "5"),
             ("LOG_USE_SYSLOG", "0"),
             ("DAEMONIZE", "0"),
         ];
-        update_config_file(cfg_path, updates);
+        // PARTITION_RAIL_POLICY is only honored by fabricmanager in shared-
+        // NVSwitch mode (FABRIC_MODE=1). In FABRIC_MODE=0 (GPUs local) FM
+        // logs an "unsupported config item" warning and ignores the value.
+        if fabric_mode != FABRIC_MODE_FULL {
+            updates.push(("PARTITION_RAIL_POLICY", rail_policy));
+        }
+        update_config_file(cfg_path, &updates);
     }
 }
 
@@ -504,9 +518,14 @@ mod tests {
     }
 
     #[test]
-    fn test_configure_fabricmanager_gpu_nvl5_symmetric_rail_policy() {
+    fn test_configure_fabricmanager_full_mode_omits_rail_policy() {
         use tempfile::NamedTempFile;
 
+        // FABRIC_MODE=0 (GPU passthrough / bare metal) rejects
+        // PARTITION_RAIL_POLICY with an "unsupported config item" warning,
+        // so configure_fabricmanager must not emit it. Holds regardless of
+        // the rail_policy argument NVRC was called with (mode_nvl5 still
+        // passes "symmetric" even when we're in FABRIC_MODE_FULL).
         let tmpfile = NamedTempFile::new().unwrap();
         let path = tmpfile.path().to_str().unwrap();
         fs::write(path, "").unwrap();
@@ -516,7 +535,34 @@ mod tests {
 
         let content = fs::read_to_string(path).unwrap();
         assert!(content.contains("FABRIC_MODE=0"));
-        assert!(content.contains("PARTITION_RAIL_POLICY=symmetric"));
+        assert!(
+            !content.contains("PARTITION_RAIL_POLICY"),
+            "PARTITION_RAIL_POLICY must not be written in FABRIC_MODE_FULL; got:\n{}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_configure_fabricmanager_full_mode_preserves_existing_rail_policy() {
+        use tempfile::NamedTempFile;
+
+        // If the shipped cfg already contains PARTITION_RAIL_POLICY (it
+        // doesn't today, but defensively): configure_fabricmanager does NOT
+        // remove existing keys, it only updates the set it knows about. So
+        // any pre-existing line is left as-is; we just don't add one of our
+        // own. Document this contract in a test.
+        let tmpfile = NamedTempFile::new().unwrap();
+        let path = tmpfile.path().to_str().unwrap();
+        fs::write(path, "PARTITION_RAIL_POLICY=greedy\n").unwrap();
+
+        let nvrc = NVRC::default();
+        nvrc.configure_fabricmanager(path, FABRIC_MODE_FULL, "symmetric");
+
+        let content = fs::read_to_string(path).unwrap();
+        // Existing line is preserved (untouched).
+        assert!(content.contains("PARTITION_RAIL_POLICY=greedy"));
+        // And we did NOT add a second line with the new value.
+        assert!(!content.contains("PARTITION_RAIL_POLICY=symmetric"));
     }
 
     #[test]
