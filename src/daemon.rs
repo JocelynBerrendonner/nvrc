@@ -46,10 +46,26 @@ impl NVRC {
     /// nvidia-persistenced keeps GPU state warm between container invocations,
     /// reducing cold-start latency. UVM persistence mode enables unified memory
     /// optimizations. Enabled by default since most workloads benefit from it.
+    ///
+    /// The readiness marker is `"nvidia-persistenced: Started ("` rather than
+    /// the older `"Local RPC services initialized"`. Verified 2026-06-26 on
+    /// Standard_ND96amsr_A100_v4 with NVIDIA driver 580.159.04:
+    /// nvidia-persistenced --verbose emits, in order,
+    ///     "Verbose syslog connection opened"
+    ///     "Directory /var/run/nvidia-persistenced will not be removed on exit"
+    ///     "Started (<PID>)"
+    /// and then jumps straight to per-GPU `"device <BDF> - registered"` lines.
+    /// The `"Local RPC services initialized"` string from older releases is
+    /// never produced, so waiting for it deterministically panics after 120 s
+    /// even on a successful run (this is the same regression class as the old
+    /// fabricmanager `"FM starting NvLink Inband"` marker -- see
+    /// `nv_fabricmanager` above). `"Started ("` is emitted immediately after
+    /// the daemon completes startup and enters its main accept loop, which is
+    /// the actual point we want to gate downstream nvidia-smi calls on.
     pub fn nvidia_persistenced(&mut self) {
         let mut reader = kmsg::open_kmsg("/dev/kmsg");
         self.spawn_persistenced("/var/run/nvidia-persistenced", "/bin/nvidia-persistenced");
-        kmsg::wait_for_marker(&mut reader, "Local RPC services initialized", 120);
+        kmsg::wait_for_marker(&mut reader, "nvidia-persistenced: Started (", 120);
     }
 
     fn spawn_persistenced(&mut self, run_dir: &str, bin: &str) {
