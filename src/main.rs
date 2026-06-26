@@ -190,9 +190,9 @@ fn main() {
     );
     match detected.mode {
         "cpu" => info!("executing cpu mode"),
-        "gpu" => mode_gpu(&mut init, detected.nvswitch),
-        "servicevm-nvl4" => mode_nvl4(&mut init, FABRIC_MODE_SHARED),
-        "servicevm-nvl5" => mode_nvl5(&mut init, FABRIC_MODE_SHARED),
+        "gpu" => mode_gpu(&mut init, detected.nvswitch, detected.gpu_count),
+        "servicevm-nvl4" => mode_nvl4(&mut init, FABRIC_MODE_SHARED, detected.gpu_count),
+        "servicevm-nvl5" => mode_nvl5(&mut init, FABRIC_MODE_SHARED, detected.gpu_count),
         unknown => panic!("unknown mode: {unknown}"),
     }
 

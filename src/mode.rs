@@ -21,6 +21,11 @@ pub struct Detection {
     pub mode: &'static str,
     /// NVSwitch generation when present: "nvl4" or "nvl5"
     pub nvswitch: Option<&'static str>,
+    /// Number of GPUs detected via PCI class 0x030000 / 0x030200.
+    /// Used by `nv_fabricmanager` to wait for the exact number of
+    /// `knvlinkSetUniqueFabricBaseAddress_GV100` kmsg lines emitted
+    /// by nvidia.ko once each GPU is registered into the fabric.
+    pub gpu_count: usize,
 }
 
 /// Detect NVRC mode from real sysfs paths.
@@ -47,6 +52,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "cpu",
                 nvswitch: None,
+                gpu_count: gpus,
             }
         }
         (0, _, 0) => {
@@ -54,6 +60,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "gpu",
                 nvswitch: None,
+                gpu_count: gpus,
             }
         }
         (4, 8, 0) => {
@@ -64,6 +71,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "gpu",
                 nvswitch: Some("nvl4"),
+                gpu_count: gpus,
             }
         }
         // HGX A100 8-GPU baseboard exposes 6 NVSwitches (all 3rd-gen, NVL4).
@@ -79,6 +87,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "gpu",
                 nvswitch: Some("nvl4"),
+                gpu_count: gpus,
             }
         }
         (4, 0, 0) => {
@@ -86,6 +95,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "servicevm-nvl4",
                 nvswitch: Some("nvl4"),
+                gpu_count: gpus,
             }
         }
         (0, 8, 4) => {
@@ -96,6 +106,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "gpu",
                 nvswitch: Some("nvl5"),
+                gpu_count: gpus,
             }
         }
         (0, 0, 4) => {
@@ -103,6 +114,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "servicevm-nvl5",
                 nvswitch: Some("nvl5"),
+                gpu_count: gpus,
             }
         }
         _ => {

@@ -110,6 +110,82 @@ pub fn wait_for_marker(reader: &mut BufReader<File>, marker: &str, timeout_secs:
     }
 }
 
+/// Block until `marker` substring appears `count` times in `/dev/kmsg`,
+/// or `timeout_secs` expires.
+///
+/// Unlike [`wait_for_marker`], this reads `/dev/kmsg` DIRECTLY (not via
+/// the syslog-mapped file path) because the markers of interest are
+/// kernel printks emitted by drivers like `nvidia.ko`, which never reach
+/// `/dev/log` and therefore never reach `/run/syslog.log`.
+///
+/// Only counts messages emitted AFTER this function is called: we
+/// `lseek(SEEK_END)` past the existing kmsg ring buffer before reading
+/// so historical kernel messages (from earlier boot, module load, etc.)
+/// don't accidentally satisfy the wait.
+///
+/// Designed for the NVRC fabricmanager synchronization use-case: the
+/// fabricmanager binary shipped with NVIDIA driver 580.* does NOT emit
+/// the `FM starting NvLink Inband` marker string that earlier versions
+/// did. Instead, the in-kernel NVIDIA driver emits
+/// `NVRM: knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base addr X
+/// is assigned to GPU N` once per GPU as the driver registers each
+/// GPU into the trained NVLink fabric. Waiting for `gpu_count` copies
+/// of `knvlinkSetUniqueFabricBaseAddress_GV100` is a driver-version-
+/// stable equivalent of the old fabricmanager marker.
+pub fn wait_for_kmsg_count(marker: &str, count: usize, timeout_secs: u32) {
+    if count == 0 {
+        info!("wait_for_kmsg_count: count=0, returning immediately ({marker})");
+        return;
+    }
+
+    // Open /dev/kmsg with O_NONBLOCK so reads return EAGAIN/WouldBlock
+    // when no new messages are pending, letting us sleep and re-check
+    // the deadline.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg")
+        .or_panic(format_args!("open /dev/kmsg"));
+
+    // /dev/kmsg supports seek: SEEK_END moves the read position past
+    // the last buffered message, so subsequent reads return only new
+    // messages emitted AFTER this point.
+    use std::io::Seek;
+    let mut file = file;
+    let _ = file.seek(std::io::SeekFrom::End(0));
+    let mut reader = BufReader::new(file);
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs as u64);
+    let mut line = String::new();
+    let mut seen: usize = 0;
+
+    info!(
+        "wait_for_kmsg_count: waiting for {count} occurrence(s) of '{marker}' in /dev/kmsg (timeout {timeout_secs}s)"
+    );
+
+    loop {
+        if Instant::now() > deadline {
+            panic!("timeout waiting for {marker} ({seen}/{count} seen)");
+        }
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => std::thread::sleep(Duration::from_millis(200)),
+            Ok(_) if line.contains(marker) => {
+                seen += 1;
+                info!("wait_for_kmsg_count: matched {seen}/{count}: {marker}");
+                if seen >= count {
+                    return;
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
+}
+
 /// Internal: open the given path for writing. Extracted for testability.
 fn kmsg_at(path: &str) -> File {
     OpenOptions::new()

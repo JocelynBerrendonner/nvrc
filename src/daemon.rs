@@ -90,15 +90,47 @@ impl NVRC {
 
     /// NVSwitch fabric manager is only needed for multi-GPU NVLink topologies.
     /// Disabled by default since most VMs have single GPUs.
-    pub fn nv_fabricmanager(&mut self, fabric_mode: u8, rail_policy: &str) {
+    ///
+    /// `gpu_count` is the number of GPUs detected during topology detection;
+    /// it's passed in (rather than re-counted here) so the same source of
+    /// truth that drove mode dispatch also drives the kmsg wait.
+    pub fn nv_fabricmanager(&mut self, fabric_mode: u8, rail_policy: &str, gpu_count: usize) {
         fs::copy(FM_CONFIG, FM_RUNTIME_CONFIG)
             .or_panic(format_args!("copy {FM_CONFIG} to {FM_RUNTIME_CONFIG}"));
         self.configure_fabricmanager(FM_RUNTIME_CONFIG, fabric_mode, rail_policy);
         fs::set_permissions(FM_RUNTIME_CONFIG, fs::Permissions::from_mode(0o400))
             .or_panic(format_args!("set permissions {FM_RUNTIME_CONFIG}"));
-        let mut reader = kmsg::open_kmsg("/dev/kmsg");
         self.spawn_fabricmanager("/bin/nv-fabricmanager");
-        kmsg::wait_for_marker(&mut reader, "FM starting NvLink Inband", 120);
+
+        // Driver-emitted kernel marker (one per GPU) instead of the
+        // userspace fabricmanager marker `"FM starting NvLink Inband"`.
+        //
+        // Background: the fabricmanager binary shipped with NVIDIA driver
+        // 580.* does NOT emit the FM marker even with LOG_USE_SYSLOG=0 +
+        // DAEMONIZE=0 + LOG_FILE_NAME=/dev/stderr + LOG_LEVEL=5. Verified
+        // 2026-06-25 on Standard_ND96amsr_A100_v4 (HGX A100 8-GPU + 6
+        // NVSwitch): fabricmanager runs to completion (nvidia-smi topo -m
+        // shows NV12 between every GPU pair = fully trained NVLink fabric),
+        // but its stderr stays empty and nothing matching
+        // `FM starting NvLink Inband` ever reaches kmsg or /run/syslog.log.
+        //
+        // The in-kernel nvidia.ko driver, however, reliably emits
+        // `NVRM: knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base
+        // addr X is assigned to GPU N` once per GPU as each GPU is
+        // registered into the trained fabric. That sequence completes
+        // when (and only when) fabricmanager has finished bring-up.
+        // Waiting for `gpu_count` matches in /dev/kmsg gives us a
+        // driver-version-stable "fabric is up" signal that doesn't
+        // depend on fabricmanager's userspace logging behavior.
+        //
+        // 300 s timeout (vs. the old 120 s) leaves headroom for benches
+        // with emulated MMIO (L1VH, nested virt) where each NVSwitch
+        // BAR write is significantly slower than bare metal.
+        kmsg::wait_for_kmsg_count(
+            "knvlinkSetUniqueFabricBaseAddress_GV100",
+            gpu_count,
+            300,
+        );
     }
 
     fn spawn_fabricmanager(&mut self, bin: &str) {
