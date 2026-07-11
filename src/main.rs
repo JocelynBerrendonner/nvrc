@@ -128,7 +128,12 @@ fn mode_gpu(init: &mut NVRC, nvswitch: Option<&str>, gpu_count: usize) {
     match nvswitch {
         Some("nvl4") => mode_nvl4(init, FABRIC_MODE_FULL, gpu_count),
         Some("nvl5") => mode_nvl5(init, FABRIC_MODE_FULL, gpu_count),
-        _ => {}
+        // No NVSwitch / SW_MNG fabric manager in this topology. On Blackwell
+        // coherent-NVLink parts (GB200) the GPU fabric/clique is brought up by
+        // nvidia-imex instead; start it here, after modprobe. nv_imex() no-ops
+        // when the imex binary isn't shipped, so non-Blackwell / single-GPU
+        // images are unaffected.
+        _ => init.nv_imex(),
     }
 
     init.nvidia_persistenced();

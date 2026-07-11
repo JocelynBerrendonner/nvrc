@@ -35,6 +35,11 @@ const FM_CONFIG: &str = "/usr/share/nvidia/nvswitch/fabricmanager.cfg";
 const FM_RUNTIME_CONFIG: &str = "/run/fabricmanager.cfg";
 const NVLSM_CONFIG: &str = "/usr/share/nvidia/nvlsm/nvlsm.conf";
 
+/// nvidia-imex daemon. Shipped into the UVM image by the kata rootfs builder
+/// (chisseled_from_deb "nvidia-imex"), which also bakes config.cfg with
+/// DAEMONIZE=0 + LOG_FILE_NAME=/dev/stderr and a single-node nodes_config.cfg.
+const IMEX_BIN: &str = "/usr/bin/nvidia-imex";
+
 /// FABRIC_MODE=0: full GPU passthrough, FM manages NVSwitches directly.
 pub const FABRIC_MODE_FULL: u8 = 0;
 /// FABRIC_MODE=1: shared NVSwitch virtualization, GPUs in tenant VMs.
@@ -74,6 +79,36 @@ impl NVRC {
         let args = persistenced_args(uvm_enabled);
         let child = background(bin, &args);
         self.track_daemon("nvidia-persistenced", child);
+    }
+
+    /// nvidia-imex (Internode Memory Exchange) brings up the GPU NVLink
+    /// fabric/clique on Blackwell coherent-NVLink parts (e.g. GB200). Until it
+    /// runs, the GPUs report a placeholder CliqueId (32766) and libcuda's
+    /// fabric-ready check fails cuInit with CUDA_ERROR_SYSTEM_NOT_READY (802),
+    /// even for a single GPU. Unlike nv-fabricmanager (which manages NVSwitch
+    /// parts), imex is the fabric bring-up path when the topology has no
+    /// NVSwitch / SW_MNG bridge -- which is exactly the plain-`gpu` mode
+    /// dispatched below.
+    ///
+    /// The daemon is normally launched by systemd (nvidia-imex.service), which
+    /// never runs under the NVRC-PID1 UVM, so NVRC starts it explicitly. The
+    /// image's /etc/nvidia-imex/config.cfg is baked with DAEMONIZE=0 (so
+    /// background() keeps the daemon in the foreground and tracks its real PID)
+    /// and LOG_FILE_NAME=/dev/stderr (so its log reaches /dev/kmsg -> the
+    /// openvmm-guest console); the single-node nodes_config.cfg (127.0.0.1) is
+    /// likewise baked in. Must be called after `modprobe nvidia` -- imex talks
+    /// to the GPUs through the driver.
+    pub fn nv_imex(&mut self) {
+        if !std::path::Path::new(IMEX_BIN).exists() {
+            log::info!("nv_imex: {IMEX_BIN} not present; skipping IMEX startup");
+            return;
+        }
+        self.spawn_imex(IMEX_BIN);
+    }
+
+    fn spawn_imex(&mut self, bin: &str) {
+        let child = background(bin, &[]);
+        self.track_daemon("nvidia-imex", child);
     }
 
     /// nv-hostengine is the DCGM backend daemon. Only started when DCGM monitoring
