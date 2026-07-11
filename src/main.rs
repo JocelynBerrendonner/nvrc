@@ -17,6 +17,7 @@ mod net;
 mod nvrc;
 mod smi;
 mod syslog;
+mod time;
 mod toolkit;
 
 pub use macros::ResultExt;
@@ -186,6 +187,10 @@ fn main() {
     net::loopback_up();
     kmsg::kernlog_setup();
     syslog::poll();
+    // Pull host wall-time from the KVM PTP clock before loading the nvidia
+    // driver: the UVM boots at the 1970 epoch, which trips the driver's
+    // secTimerNs<osTimeNs assertions and breaks TLS/apt in the container.
+    time::sync_from_host();
     init.process_kernel_params(None);
 
     let detected = mode::detect();
