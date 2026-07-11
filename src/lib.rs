@@ -26,6 +26,7 @@ pub mod net;
 pub mod nvrc;
 pub mod smi;
 pub mod syslog;
+pub mod time;
 pub mod toolkit;
 pub mod uvm;
 

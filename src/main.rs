@@ -7,7 +7,7 @@ use ::NVRC::nvrc::NVRC;
 use ::NVRC::toolkit::nvidia_ctk_cdi;
 use ::NVRC::{
     gpu_extension, guest_extension_image, hash, infiniband, init, kmsg, lockdown, mode, modprobe,
-    mount, net, syslog,
+    mount, net, syslog, time,
 };
 use log::info;
 
@@ -77,6 +77,9 @@ fn main() {
     net::loopback_up();
     kmsg::kernlog_setup();
     syslog::poll();
+    // The UVM boots at the 1970 epoch; take host wall time from the KVM PTP
+    // clock before the NVIDIA driver loads.
+    time::sync_from_host();
     init.process_kernel_params(None);
     hash::self_exe();
 
