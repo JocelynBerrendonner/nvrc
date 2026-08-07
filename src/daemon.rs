@@ -166,23 +166,21 @@ impl NVRC {
         // `FM starting NvLink Inband` ever reaches kmsg or /run/syslog.log.
         //
         // The in-kernel nvidia.ko driver, however, reliably emits
-        // `NVRM: knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base
-        // addr X is assigned to GPU N` once per GPU as each GPU is
+        // `NVRM: GPU<N> knvlinkSetUniqueFabricBaseAddress_GV100: Fabric
+        // base addr X is assigned to GPU N` once per GPU as each GPU is
         // registered into the trained fabric. That sequence completes
         // when (and only when) fabricmanager has finished bring-up.
         // Waiting for `gpu_count` matches in /dev/kmsg gives us a
         // driver-version-stable "fabric is up" signal that doesn't
         // depend on fabricmanager's userspace logging behavior.
         //
-        // Marker is `"NVRM: knvlinkSetUniqueFabricBaseAddress_GV100"`
-        // -- WITH the `"NVRM: "` prefix -- to disambiguate the real
-        // driver printk from any other line that happens to contain
-        // the function name. The driver always emits this string with
-        // the `NVRM: ` prefix; NVRC's own kernlog-routed info!() lines
-        // do not. Necessary because previously (`knvlink...` substring
-        // only) the waiter self-fed off lines that NVRC itself wrote
-        // about the marker. Verified 2026-06-26: with the bare
-        // substring marker, all 8 matches completed in 1.24 ms because
+        // Match the function name because the driver inserts a per-device
+        // `GPU<N>` token between `NVRM:` and the function name. The earlier
+        // contiguous `NVRM: knvlink...` marker therefore matched zero real
+        // driver messages. Previously, the bare substring made the waiter
+        // self-feed from lines that NVRC itself wrote about the marker.
+        // Verified 2026-06-26: before those logs were scrubbed, the bare
+        // substring marker all 8 matches completed in 1.24 ms because
         // NVRC's own startup banner `"waiting for 8 occurrence(s) of
         // 'knvlink...'"` matched first, then 7 of its own `"matched
         // X/8: knvlink..."` lines matched themselves -- nvidia-smi
@@ -193,11 +191,7 @@ impl NVRC {
         // 300 s timeout (vs. the old 120 s) leaves headroom for benches
         // with emulated MMIO (L1VH, nested virt) where each NVSwitch
         // BAR write is significantly slower than bare metal.
-        kmsg::wait_for_kmsg_count(
-            "NVRM: knvlinkSetUniqueFabricBaseAddress_GV100",
-            gpu_count,
-            300,
-        );
+        kmsg::wait_for_kmsg_count(kmsg::NVIDIA_FABRIC_READY_MARKER, gpu_count, 300);
     }
 
     fn spawn_fabricmanager(&mut self, bin: &str) {

@@ -15,6 +15,8 @@ static KERNLOG_INIT: Once = Once::new();
 /// where NVIDIA drivers may emit bursts of diagnostic data.
 const SOCKET_BUFFER_SIZE: &str = "16777216";
 
+pub const NVIDIA_FABRIC_READY_MARKER: &str = "knvlinkSetUniqueFabricBaseAddress_GV100";
+
 /// Initialize kernel logging and tune socket buffer sizes.
 /// Large buffers (16MB) prevent message loss during high-throughput GPU operations
 /// where drivers may emit bursts of diagnostic data.
@@ -127,8 +129,8 @@ pub fn wait_for_marker(reader: &mut BufReader<File>, marker: &str, timeout_secs:
 /// fabricmanager binary shipped with NVIDIA driver 580.* does NOT emit
 /// the `FM starting NvLink Inband` marker string that earlier versions
 /// did. Instead, the in-kernel NVIDIA driver emits
-/// `NVRM: knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base addr X
-/// is assigned to GPU N` once per GPU as the driver registers each
+/// `NVRM: GPU<N> knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base
+/// addr X is assigned to GPU N` once per GPU as the driver registers each
 /// GPU into the trained NVLink fabric. Waiting for `gpu_count` copies
 /// of `knvlinkSetUniqueFabricBaseAddress_GV100` is a driver-version-
 /// stable equivalent of the old fabricmanager marker.
@@ -299,6 +301,14 @@ mod tests {
                 SOCKET_BUFFER_SIZE
             );
         }
+    }
+
+    #[test]
+    fn test_fabric_marker_matches_real_gpu_kmsg_format() {
+        let line = "NVRM: GPU7 knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base addr 0 is assigned to GPU 7";
+
+        assert!(line.contains(NVIDIA_FABRIC_READY_MARKER));
+        assert!(!line.contains("NVRM: knvlinkSetUniqueFabricBaseAddress_GV100"));
     }
 
     // === wait_for_marker tests ===
