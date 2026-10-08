@@ -53,7 +53,9 @@ fn detect_from(pci_path: &str) -> Detection {
                 nvswitch: None,
             }
         }
-        (4, 8, 0) => {
+        // HGX H100 8-GPU has 4 NVSwitch chips; HGX A100 8-GPU has 6. Both are
+        // managed directly by nv-fabricmanager with the GPUs in this VM.
+        (4, 8, 0) | (6, 8, 0) => {
             debug!(
                 "mode: gpu FABRIC_MODE=0, {} GPU + {} NVSWITCH",
                 gpus, nvswitches
@@ -329,6 +331,20 @@ mod tests {
     fn test_detect_gpu_bare_metal_nvl4() {
         let pci = TempDir::new().unwrap();
         for i in 0..4 {
+            create_pci_device(&pci, &format!("0000:0{}:00.0", i), "0x10de\n", "0x068000\n");
+        }
+        for i in 0..8 {
+            create_pci_device(&pci, &format!("0000:4{}:00.0", i), "0x10de\n", "0x030200\n");
+        }
+        let d = detect_from(pci.path().to_str().unwrap());
+        assert_eq!(d.mode, "gpu");
+        assert_eq!(d.nvswitch, Some("nvl4"));
+    }
+
+    #[test]
+    fn test_detect_gpu_bare_metal_hgx_a100() {
+        let pci = TempDir::new().unwrap();
+        for i in 0..6 {
             create_pci_device(&pci, &format!("0000:0{}:00.0", i), "0x10de\n", "0x068000\n");
         }
         for i in 0..8 {
