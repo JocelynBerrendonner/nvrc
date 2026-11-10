@@ -12,6 +12,7 @@ pub fn load(module: &str) {
     let dirname = gpu_extension::modprobe_dirname(module);
     let args = build_args(module, dirname.as_deref(), single_gpu);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    log::info!("modprobe: {MODPROBE} {}", arg_refs.join(" "));
     foreground(MODPROBE, &arg_refs);
 }
 
