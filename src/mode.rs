@@ -21,6 +21,9 @@ pub struct Detection {
     pub mode: &'static str,
     /// NVSwitch generation when present: "nvl4" or "nvl5"
     pub nvswitch: Option<&'static str>,
+    /// NVIDIA GPUs assigned to this VM; the fabric-ready wait expects one
+    /// driver fabric registration per GPU.
+    pub gpu_count: usize,
 }
 
 /// Detect NVRC mode from real sysfs paths.
@@ -44,6 +47,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "cpu",
                 nvswitch: None,
+                gpu_count: gpus,
             }
         }
         (0, _, 0) => {
@@ -51,6 +55,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "gpu",
                 nvswitch: None,
+                gpu_count: gpus,
             }
         }
         // HGX H100 8-GPU has 4 NVSwitch chips; HGX A100 8-GPU has 6. Both are
@@ -63,6 +68,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "gpu",
                 nvswitch: Some("nvl4"),
+                gpu_count: gpus,
             }
         }
         (4, 0, 0) => {
@@ -70,6 +76,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "servicevm-nvl4",
                 nvswitch: Some("nvl4"),
+                gpu_count: gpus,
             }
         }
         (0, 8, 4) => {
@@ -80,6 +87,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "gpu",
                 nvswitch: Some("nvl5"),
+                gpu_count: gpus,
             }
         }
         (0, 0, 4) => {
@@ -87,6 +95,7 @@ fn detect_from(pci_path: &str) -> Detection {
             Detection {
                 mode: "servicevm-nvl5",
                 nvswitch: Some("nvl5"),
+                gpu_count: gpus,
             }
         }
         _ => {

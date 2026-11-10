@@ -96,7 +96,13 @@ impl NVRC {
 
     /// NVSwitch fabric manager is only needed for multi-GPU NVLink topologies.
     /// Disabled by default since most VMs have single GPUs.
-    pub fn nv_fabricmanager(&mut self, fabric_mode: u8, rail_policy: &str) {
+    ///
+    /// Readiness is the driver's per-GPU fabric registration record in
+    /// /dev/kmsg, counted against `gpu_count`, rather than Fabric Manager's
+    /// "FM starting NvLink Inband" log line, which the HGX A100 (NVSwitch
+    /// gen 2) fabric never produced. The timeout leaves room for slow MMIO
+    /// in nested virtualization.
+    pub fn nv_fabricmanager(&mut self, fabric_mode: u8, rail_policy: &str, gpu_count: usize) {
         // The stock config ships in the gpu extension; the editable runtime copy
         // stays on the writable /run tmpfs.
         let fm_config = gpu_extension::path(FM_CONFIG);
@@ -105,7 +111,7 @@ impl NVRC {
         self.configure_fabricmanager(FM_RUNTIME_CONFIG, fabric_mode, rail_policy);
         fs::set_permissions(FM_RUNTIME_CONFIG, fs::Permissions::from_mode(0o400))
             .or_panic(format_args!("set permissions {FM_RUNTIME_CONFIG}"));
-        kmsg::wait_for_marker_after("FM starting NvLink Inband", 120, || {
+        kmsg::wait_for_kmsg_count_after(kmsg::NVIDIA_FABRIC_READY_MARKER, gpu_count, 300, || {
             self.spawn_fabricmanager(&gpu_extension::path("/bin/nv-fabricmanager"))
         });
     }

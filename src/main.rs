@@ -15,14 +15,14 @@ use log::info;
 /// and monitoring daemons before workloads can use the GPU.
 /// On bare metal HGX systems (GPUs + NVSwitches), also starts
 /// the fabric manager via the appropriate NVSwitch mode.
-fn mode_gpu(init: &mut NVRC, nvswitch: Option<&str>) {
+fn mode_gpu(init: &mut NVRC, nvswitch: Option<&str>, gpu_count: usize) {
     modprobe::load("nvidia");
     modprobe::load("nvidia-uvm");
     init.setup_uvm_tools();
 
     match nvswitch {
-        Some("nvl4") => mode_nvl4(init, FABRIC_MODE_FULL),
-        Some("nvl5") => mode_nvl5(init, FABRIC_MODE_FULL),
+        Some("nvl4") => mode_nvl4(init, FABRIC_MODE_FULL, gpu_count),
+        Some("nvl5") => mode_nvl5(init, FABRIC_MODE_FULL, gpu_count),
         _ => {}
     }
 
@@ -42,14 +42,14 @@ fn mode_gpu(init: &mut NVRC, nvswitch: Option<&str>) {
 /// NVSwitch NVL4 mode for HGX H100/H200/H800 systems (third-gen NVSwitch).
 /// Service VM mode for NVLink 4.0 topologies in shared virtualization.
 /// Starts fabric manager; the caller has already loaded the NVIDIA driver.
-fn mode_nvl4(init: &mut NVRC, fabric_mode: u8) {
-    init.nv_fabricmanager(fabric_mode, "greedy");
+fn mode_nvl4(init: &mut NVRC, fabric_mode: u8, gpu_count: usize) {
+    init.nv_fabricmanager(fabric_mode, "greedy", gpu_count);
     init.health_checks();
 }
 
 /// HGX Bx00 systems use CX7 bridges for NVLink management instead of direct GPU access.
 /// GPUs are passed to tenant VMs; only the CX7 IB devices are visible here.
-fn mode_nvl5(init: &mut NVRC, fabric_mode: u8) {
+fn mode_nvl5(init: &mut NVRC, fabric_mode: u8, gpu_count: usize) {
     // ib_umad exposes /dev/umad* for InfiniBand MAD protocol access;
     // mlx5_ib creates /sys/class/infiniband/mlx5_* entries for the CX7 bridges.
     modprobe::load("ib_umad");
@@ -64,7 +64,7 @@ fn mode_nvl5(init: &mut NVRC, fabric_mode: u8) {
     // NVLSM must initialize the NVLink subnet before FM can manage the fabric
     init.nv_nvlsm();
     init.health_checks();
-    init.nv_fabricmanager(fabric_mode, "symmetric");
+    init.nv_fabricmanager(fabric_mode, "symmetric", gpu_count);
     init.health_checks();
 }
 
@@ -92,12 +92,12 @@ fn main() {
     let detected = mode::detect();
     match detected.mode {
         "cpu" => info!("executing cpu mode"),
-        "gpu" => mode_gpu(&mut init, detected.nvswitch),
+        "gpu" => mode_gpu(&mut init, detected.nvswitch, detected.gpu_count),
         "servicevm-nvl4" => {
             modprobe::load("nvidia");
-            mode_nvl4(&mut init, FABRIC_MODE_SHARED);
+            mode_nvl4(&mut init, FABRIC_MODE_SHARED, detected.gpu_count);
         }
-        "servicevm-nvl5" => mode_nvl5(&mut init, FABRIC_MODE_SHARED),
+        "servicevm-nvl5" => mode_nvl5(&mut init, FABRIC_MODE_SHARED, detected.gpu_count),
         unknown => panic!("unknown mode: {unknown}"),
     }
 

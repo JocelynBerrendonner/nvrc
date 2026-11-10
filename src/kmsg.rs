@@ -119,6 +119,71 @@ fn kmsg_at(path: &str) -> File {
         .or_panic(format_args!("open {path}"))
 }
 
+/// Kernel record nvidia.ko emits once per GPU when Fabric Manager registers
+/// it into the NVLink fabric, e.g. `NVRM: GPU7
+/// knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base addr ... is assigned
+/// to GPU 7`. The driver puts `GPU<N>` between `NVRM:` and the function name,
+/// so only the function name is matched.
+pub const NVIDIA_FABRIC_READY_MARKER: &str = "knvlinkSetUniqueFabricBaseAddress_GV100";
+
+/// Run `start` (spawning a daemon), then wait until `marker` has appeared in
+/// `count` new /dev/kmsg records. Driver printks never reach /dev/log, so
+/// unlike [`wait_for_marker_after`] this reads /dev/kmsg itself. Records that
+/// predate the call are skipped.
+pub fn wait_for_kmsg_count_after(
+    marker: &str,
+    count: usize,
+    timeout_secs: u32,
+    start: impl FnOnce(),
+) {
+    wait_for_count_after_in("/dev/kmsg", marker, count, timeout_secs, start);
+}
+
+fn wait_for_count_after_in(
+    path: &str,
+    marker: &str,
+    count: usize,
+    timeout_secs: u32,
+    start: impl FnOnce(),
+) {
+    use std::io::{Seek, SeekFrom};
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .or_panic(format_args!("open {path}"));
+    let _ = file.seek(SeekFrom::End(0));
+    let mut reader = BufReader::new(file);
+
+    start();
+    if count == 0 {
+        return;
+    }
+
+    // kernlog sends NVRC's own info!() lines to /dev/kmsg, which this loop
+    // reads back: no status line may contain `marker`, or the wait would
+    // count its own output.
+    info!("waiting for {count} kmsg record(s) (timeout {timeout_secs}s)");
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs as u64);
+    let mut line = String::new();
+    let mut seen = 0;
+    while seen < count {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_else(|| panic!("timeout waiting for {marker} ({seen}/{count} seen)"));
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(n) if n > 0 && line.contains(marker) => {
+                seen += 1;
+                info!("matched {seen}/{count} kmsg record(s)");
+            }
+            Ok(n) if n > 0 => {}
+            _ => crate::syslog::try_poll_for(remaining.min(MAX_WAIT)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +367,56 @@ mod tests {
                 .expect("open syslog file");
             writeln!(file, "{}", marker).expect("write marker");
         });
+    }
+
+    // === wait_for_kmsg_count_after ===
+
+    const GPU_FABRIC_RECORD: &str = "6,1234,5678,-;NVRM: GPU7 knvlinkSetUniqueFabricBaseAddress_GV100: Fabric base addr 0 is assigned to GPU 7\n";
+
+    /// Seed `path` with `before`, then wait while `start` appends `after`.
+    fn count_wait(before: &str, after: &str, count: usize, timeout_secs: u32) -> bool {
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(before.as_bytes()).unwrap();
+        tmp.flush().unwrap();
+        let path = tmp.path().to_str().unwrap().to_owned();
+        panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            wait_for_count_after_in(
+                &path,
+                NVIDIA_FABRIC_READY_MARKER,
+                count,
+                timeout_secs,
+                || {
+                    tmp.write_all(after.as_bytes()).unwrap();
+                    tmp.flush().unwrap();
+                },
+            )
+        }))
+        .is_ok()
+    }
+
+    #[test]
+    fn test_fabric_marker_matches_driver_record() {
+        assert!(GPU_FABRIC_RECORD.contains(NVIDIA_FABRIC_READY_MARKER));
+        assert!(!GPU_FABRIC_RECORD.contains("NVRM: knvlinkSetUniqueFabricBaseAddress_GV100"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "O_NONBLOCK is an open flag miri does not support")]
+    fn test_kmsg_count_counts_new_records() {
+        let after = format!("noise\n{GPU_FABRIC_RECORD}noise\n{GPU_FABRIC_RECORD}");
+        assert!(count_wait("", &after, 2, 5));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "O_NONBLOCK is an open flag miri does not support")]
+    fn test_kmsg_count_skips_records_before_start() {
+        let before = GPU_FABRIC_RECORD.repeat(2);
+        assert!(!count_wait(&before, GPU_FABRIC_RECORD, 2, 1));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "O_NONBLOCK is an open flag miri does not support")]
+    fn test_kmsg_count_zero_returns_after_start() {
+        assert!(count_wait("", "", 0, 1));
     }
 }
