@@ -23,7 +23,9 @@ fn mode_gpu(init: &mut NVRC, nvswitch: Option<&str>, gpu_count: usize) {
     match nvswitch {
         Some("nvl4") => mode_nvl4(init, FABRIC_MODE_FULL, gpu_count),
         Some("nvl5") => mode_nvl5(init, FABRIC_MODE_FULL, gpu_count),
-        _ => {}
+        // No NVSwitch or ConnectX fabric: on GB200 nvidia-imex brings up the
+        // NVLink fabric instead (no-op if the image doesn't ship it).
+        _ => init.nv_imex(),
     }
 
     init.nvidia_persistenced();
