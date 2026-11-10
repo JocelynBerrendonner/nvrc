@@ -162,13 +162,17 @@ impl NVRC {
     /// Write FABRIC_MODE and PARTITION_RAIL_POLICY to fabricmanager.cfg.
     /// FABRIC_MODE: 0 = bare metal (GPUs local), 1 = service VM (GPUs in tenant VMs)
     /// PARTITION_RAIL_POLICY: "greedy" (NVL4) or "symmetric" (NVL5, required for CC on Blackwell)
+    ///
+    /// Fabric Manager only honors PARTITION_RAIL_POLICY in shared NVSwitch mode
+    /// and warns "unsupported config item" for it in FABRIC_MODE=0, so it is
+    /// written in shared mode only. Existing lines are left untouched.
     fn configure_fabricmanager(&self, cfg_path: &str, fabric_mode: u8, rail_policy: &str) {
         let fm = &fabric_mode.to_string();
-        let updates = &[
-            ("FABRIC_MODE", fm.as_str()),
-            ("PARTITION_RAIL_POLICY", rail_policy),
-        ];
-        update_config_file(cfg_path, updates);
+        let mut updates = vec![("FABRIC_MODE", fm.as_str())];
+        if fabric_mode != FABRIC_MODE_FULL {
+            updates.push(("PARTITION_RAIL_POLICY", rail_policy));
+        }
+        update_config_file(cfg_path, &updates);
     }
 }
 
@@ -377,8 +381,6 @@ mod tests {
     }
 
     #[rstest]
-    #[case::bare_metal_greedy(FABRIC_MODE_FULL, "greedy")]
-    #[case::bare_metal_nvl5_symmetric(FABRIC_MODE_FULL, "symmetric")]
     #[case::servicevm_nvl4(FABRIC_MODE_SHARED, "greedy")]
     #[case::servicevm_nvl5(FABRIC_MODE_SHARED, "symmetric")]
     fn test_configure_fabricmanager_writes_mode_and_rail_policy(
@@ -389,6 +391,28 @@ mod tests {
 
         assert!(content.contains(&format!("FABRIC_MODE={fabric_mode}")));
         assert!(content.contains(&format!("PARTITION_RAIL_POLICY={rail_policy}")));
+    }
+
+    #[rstest]
+    #[case::bare_metal_greedy("greedy")]
+    #[case::bare_metal_nvl5_symmetric("symmetric")]
+    fn test_configure_fabricmanager_full_mode_omits_rail_policy(#[case] rail_policy: &str) {
+        let content = configured("", FABRIC_MODE_FULL, rail_policy);
+
+        assert!(content.contains("FABRIC_MODE=0"));
+        assert!(!content.contains("PARTITION_RAIL_POLICY"));
+    }
+
+    #[test]
+    fn test_configure_fabricmanager_full_mode_keeps_existing_rail_policy() {
+        let content = configured(
+            "PARTITION_RAIL_POLICY=greedy\n",
+            FABRIC_MODE_FULL,
+            "symmetric",
+        );
+
+        assert!(content.contains("PARTITION_RAIL_POLICY=greedy"));
+        assert!(!content.contains("PARTITION_RAIL_POLICY=symmetric"));
     }
 
     #[test]
