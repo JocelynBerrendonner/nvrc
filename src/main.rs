@@ -14,13 +14,16 @@ use log::info;
 
 /// VMs with GPU passthrough need driver setup, clock tuning, and monitoring
 /// daemons before workloads can use the GPU. A fabric assigned alongside the
-/// GPUs starts its services first, in full-passthrough mode.
+/// GPUs starts its services first, in full-passthrough mode; coherent
+/// Blackwell GPUs bring up their NVLink fabric through nvidia-imex instead.
 fn mode_gpu(init: &mut NVRC, fabric: Option<Fabric>) {
     modprobe::load("nvidia-uvm");
     init.setup_uvm_tools();
 
     if let Some(fabric) = fabric {
         start_fabric(init, fabric, FABRIC_MODE_FULL);
+    } else if mode::imex_fabric() {
+        init.nv_imex();
     }
 
     init.nvidia_persistenced();

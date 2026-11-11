@@ -6,8 +6,9 @@
 use crate::macros::ResultExt;
 use log::{debug, info};
 use pcilibs_rs::{
+    gpu::Family,
     nvlink::NVIDIA,
-    platform::{self, FabricInterface, Topology},
+    platform::{self, FabricInterface, Kind, Topology},
     Sysfs,
 };
 
@@ -75,6 +76,20 @@ fn select(topology: &Topology) -> Mode {
     };
     info!("mode: {mode:?}");
     mode
+}
+
+/// Coherent-NVLink Blackwell GPUs (GB200) form their NVLink fabric through
+/// nvidia-imex rather than Fabric Manager, with no NVSwitch or ConnectX
+/// function in the VM. This classifies the GPUs by PCI identity, a second
+/// scan after `detect`.
+pub fn imex_fabric() -> bool {
+    imex_fabric_from(&Sysfs::default())
+}
+
+fn imex_fabric_from(sysfs: &Sysfs) -> bool {
+    let detected = platform::discover(sysfs).or_panic("discover PCI platform");
+    debug!("platform: {:?}", detected.platform);
+    detected.platform.kind == Kind::Coherent(Family::Blackwell)
 }
 
 /// The port NVLSM and FM manage the fabric on: the first SM-enabled port of a
@@ -268,5 +283,32 @@ mod tests {
         let f = fake();
         add_management_pf(&f, "0000:05:00.0", true);
         management_port_guid_from(&f.sysfs);
+    }
+
+    /// Adds NVIDIA GPUs with the subsystem id the catalog keys on.
+    fn add_gpus(f: &pcilibs_rs::testfs::Fake, count: usize, device: u16, subsystem: u16) {
+        for i in 0..count {
+            let bdf = format!("0000:01:{i:02x}.0");
+            f.add_pci_device(&bdf, 0x10de, device, 0x030200, None);
+            let path = f.sysfs.device(&bdf).unwrap();
+            fs::write(path.join("subsystem_device"), format!("{subsystem:#06x}\n")).unwrap();
+        }
+    }
+
+    #[rstest]
+    #[case::gb200(4, 0x2941, 0x2046, true)]
+    #[case::single_gb200(1, 0x2941, 0x2046, true)]
+    #[case::h100_sxm(8, 0x2330, 0x16c0, false)]
+    #[case::unknown_gpu(2, 0xffff, 0xffff, false)]
+    #[case::no_gpu(0, 0, 0, false)]
+    fn imex_fabric_is_coherent_blackwell_only(
+        #[case] gpus: usize,
+        #[case] device: u16,
+        #[case] subsystem: u16,
+        #[case] expected: bool,
+    ) {
+        let f = fake();
+        add_gpus(&f, gpus, device, subsystem);
+        assert_eq!(imex_fabric_from(&f.sysfs), expected);
     }
 }

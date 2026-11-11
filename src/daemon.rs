@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) NVIDIA CORPORATION
+// Portions Copyright (c) Microsoft Corporation.
 
 use crate::config::update_config_file;
 use crate::gpu_extension;
@@ -42,6 +43,7 @@ const FM_CONFIG: &str = "/usr/share/nvidia/nvswitch/fabricmanager.cfg";
 const FM_RUNTIME_CONFIG: &str = "/run/fabricmanager.cfg";
 const NVLSM_CONFIG: &str = "/usr/share/nvidia/nvlsm/nvlsm.conf";
 const DCGM_EXPORTER_COUNTERS: &str = "/etc/dcgm-exporter/default-counters.csv";
+const IMEX_BIN: &str = "/usr/bin/nvidia-imex";
 
 /// FABRIC_MODE=0: full GPU passthrough, FM manages NVSwitches directly.
 pub const FABRIC_MODE_FULL: u8 = 0;
@@ -108,6 +110,24 @@ impl NVRC {
         fs::create_dir_all(run_dir).or_panic(format_args!("create_dir_all {run_dir}"));
         let args = persistenced_args(self.uvm_persistence_mode.unwrap_or(true));
         self.spawn_daemon("nvidia-persistenced", bin, &args);
+    }
+
+    /// nvidia-imex brings up the NVLink fabric of coherent Blackwell GPUs
+    /// (GB200). Until it runs they report a placeholder clique and cuInit fails
+    /// with CUDA_ERROR_SYSTEM_NOT_READY, even for one GPU. systemd starts it on
+    /// a host; under NVRC nothing else would. Skipped when the image doesn't
+    /// ship it. The image's config must keep it in the foreground
+    /// (DAEMONIZE=0) so the tracked PID is the daemon itself.
+    pub fn nv_imex(&mut self) {
+        self.spawn_imex(&gpu_extension::path(IMEX_BIN));
+    }
+
+    fn spawn_imex(&mut self, bin: &str) {
+        if !std::path::Path::new(bin).exists() {
+            info!("nvidia-imex: {bin} not present, skipping");
+            return;
+        }
+        self.spawn_daemon("nvidia-imex", bin, &[]);
     }
 
     /// nv-hostengine is the DCGM backend daemon. Only started when DCGM monitoring
@@ -323,9 +343,32 @@ mod tests {
         nvrc.health_checks();
     }
 
+    #[test]
+    #[cfg_attr(miri, ignore = "miri cannot emulate process spawn")]
+    fn test_spawn_imex_success() {
+        let mut nvrc = NVRC::default();
+        nvrc.spawn_imex("/bin/true");
+        nvrc.health_checks();
+    }
+
+    #[test]
+    fn test_spawn_imex_skipped_without_the_binary() {
+        let mut nvrc = NVRC::default();
+        nvrc.spawn_imex("/nonexistent/nvidia-imex");
+        nvrc.health_checks();
+    }
+
     // The wrappers resolve the real binaries and config. A host that has them
     // installed must not get a daemon started by a unit test, so these step
     // aside there and check the fail-closed path everywhere else.
+
+    #[test]
+    fn nv_imex_skips_without_the_binary() {
+        if std::path::Path::new(&gpu_extension::path(IMEX_BIN)).exists() {
+            return;
+        }
+        NVRC::default().nv_imex();
+    }
 
     #[test]
     fn fabric_markers_and_rail_policy_follow_the_switch_generation() {
