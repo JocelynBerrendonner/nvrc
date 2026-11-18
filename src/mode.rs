@@ -135,6 +135,27 @@ fn count_gpus_from(pci_path: &str) -> usize {
         .count()
 }
 
+/// GB200 GPU PCI device ID. Coherent-NVLink Blackwell GPUs join an IMEX clique
+/// through nvidia-imex; without it they keep a placeholder CliqueId.
+const GB200_DEVICE_ID: &str = "0x2941";
+
+/// Whether the VM has GB200 GPUs, which need nvidia-imex.
+pub fn imex_fabric() -> bool {
+    imex_fabric_from(PCI_DEVICES)
+}
+
+fn imex_fabric_from(pci_path: &str) -> bool {
+    let Ok(entries) = fs::read_dir(pci_path) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        let read = |f: &str| fs::read_to_string(e.path().join(f)).unwrap_or_default();
+        read("vendor").trim() == "0x10de"
+            && read("class").trim().starts_with("0x03")
+            && read("device").trim() == GB200_DEVICE_ID
+    })
+}
+
 /// Count NVLink management NICs (SW_MNG marker in PCI VPD).
 /// Scans Mellanox (0x15b3) PCI devices and checks VPD directly,
 /// avoiding dependency on IB drivers being loaded.
@@ -234,6 +255,23 @@ mod tests {
         let tmpdir = TempDir::new().unwrap();
         create_pci_device(&tmpdir, "0000:41:00.0", "0x10de\n", "0x030200\n");
         assert_eq!(count_gpus_from(tmpdir.path().to_str().unwrap()), 1);
+    }
+
+    #[rstest::rstest]
+    #[case::gb200("0x2941\n", true)]
+    #[case::h100("0x2330\n", false)]
+    fn test_imex_fabric(#[case] device: &str, #[case] expected: bool) {
+        let tmpdir = TempDir::new().unwrap();
+        create_pci_device(&tmpdir, "0000:81:00.0", "0x10de\n", "0x030200\n");
+        fs::write(tmpdir.path().join("0000:81:00.0/device"), device).unwrap();
+        assert_eq!(imex_fabric_from(tmpdir.path().to_str().unwrap()), expected);
+    }
+
+    #[test]
+    fn test_imex_fabric_no_gpus() {
+        let tmpdir = TempDir::new().unwrap();
+        assert!(!imex_fabric_from(tmpdir.path().to_str().unwrap()));
+        assert!(!imex_fabric_from("/nonexistent/path"));
     }
 
     #[test]

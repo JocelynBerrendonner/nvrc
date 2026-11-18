@@ -24,6 +24,7 @@ fn mode_gpu(init: &mut NVRC, nvswitch: Option<&str>) {
         Some("nvl3") => mode_nvl3(init, FABRIC_MODE_FULL),
         Some("nvl4") => mode_nvl4(init, FABRIC_MODE_FULL),
         Some("nvl5") => mode_nvl5(init, FABRIC_MODE_FULL),
+        _ if mode::imex_fabric() => init.nv_imex(),
         _ => {}
     }
 
